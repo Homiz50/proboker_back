@@ -1,14 +1,11 @@
 package com.citynect.probroker.entities;
-
 import lombok.AllArgsConstructor;
 import lombok.Data;
 import lombok.NoArgsConstructor;
-
 @Data
 @AllArgsConstructor
-@NoArgsConstructor
+@NoArgsConstructor 
 public class DemoAccountDTO {
-
 	private String companyName;
 	private String name;
 	private String number;

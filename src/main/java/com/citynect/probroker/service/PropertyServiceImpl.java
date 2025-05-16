@@ -10,10 +10,12 @@ import java.time.ZonedDateTime;
 import java.time.format.DateTimeFormatter;
 import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.Date;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -880,212 +882,201 @@ public class PropertyServiceImpl implements PropertyService {
 			throw e;
 		}
 	}
+public Page<PropertyDetails> filterPropertiesSharingFlatV2(PropertyFilter filterRequest, int page, int size) {
+    try {
+        User user = null;
 
-	public Page<PropertyDetails> filterPropertiesSharingFlatV2(PropertyFilter filterRequest, int page, int size) {
-		try {
-			User user = null;
-			if (filterRequest.getUserId() != null && !filterRequest.getUserId().isEmpty()) {
-				user = userRepository.findById(filterRequest.getUserId()).orElse(null);
-				if (user == null || user.getIsPremium() == 0) {
-					System.out.print("this method is running");
+        if (filterRequest.getUserId() != null && !filterRequest.getUserId().isEmpty()) {
+            user = userRepository.findById(filterRequest.getUserId()).orElse(null);
+            if (user == null || user.getIsPremium() == 0) {
+                System.out.print("this method is running");
+                return new PageImpl<>(Collections.emptyList(), PageRequest.of(page, size), 0);
+            }
+        }
 
-					return new PageImpl<>(Collections.emptyList(), PageRequest.of(page, size), 0);
-				}
-			}
+        Criteria criteria = new Criteria();
+        ZoneOffset zoneOffset = ZoneOffset.UTC;
 
-			// Initialize criteria
-			Criteria criteria = new Criteria();
+        // Status filters
+        if (filterRequest.getStatus() != null) {
+            switch (filterRequest.getStatus().toLowerCase()) {
+                case "active":
+                    criteria = criteria.and("isDeleted").is(0);
+                    break;
+                case "deleted":
+                    criteria = criteria.and("isDeleted").is(1);
+                    break;
+                case "yesterday":
+                    ZonedDateTime yesterday = ZonedDateTime.now(zoneOffset).minusDays(1);
+                    LocalDateTime startOfYesterday = yesterday.toLocalDate().atStartOfDay();
+                    LocalDateTime endOfYesterday = startOfYesterday.plusDays(1);
+                    criteria = criteria.and("listedDate").gte(startOfYesterday).lt(endOfYesterday);
+                    break;
+                case "today":
+                    ZonedDateTime today = ZonedDateTime.now(zoneOffset);
+                    LocalDateTime startOfToday = today.toLocalDate().atStartOfDay();
+                    LocalDateTime endOfToday = startOfToday.plusDays(1);
+                    criteria = criteria.and("listedDate").gte(startOfToday).lt(endOfToday);
+                    break;
+            }
+        }
 
-			ZoneOffset zoneOffset = ZoneOffset.UTC;
+        // ListedOn filter
+        if (filterRequest.getListedOn() != null && !filterRequest.getListedOn().isEmpty()) {
+            DateTimeFormatter formatter = DateTimeFormatter.ofPattern("dd/MM/yyyy");
+            LocalDate listedOnDate = LocalDate.parse(filterRequest.getListedOn(), formatter);
+            LocalDateTime startOfDay = listedOnDate.atStartOfDay();
+            LocalDateTime endOfDay = listedOnDate.atTime(LocalTime.MAX);
+            criteria = criteria.and("listedDate").gte(startOfDay).lte(endOfDay);
+        } else {
+            LocalDateTime now = LocalDateTime.now(zoneOffset);
+            criteria = criteria.and("listedDate").lte(now);
+        }
 
-			// Handle status-based filtering
-			if (filterRequest.getStatus() != null) {
-				switch (filterRequest.getStatus().toLowerCase()) {
-				case "active":
-					criteria = criteria.and("isDeleted").is(0);
-					break;
-				case "deleted":
-					criteria = criteria.and("isDeleted").is(1);
-					break;
-				case "yesterday":
-					ZonedDateTime yesterday = ZonedDateTime.now(zoneOffset).minusDays(1);
-					LocalDateTime startOfYesterday = yesterday.toLocalDate().atStartOfDay();
-					LocalDateTime endOfYesterday = startOfYesterday.plusDays(1);
-					criteria = criteria.and("listedDate").gte(startOfYesterday).lt(endOfYesterday);
-					break;
-				case "today":
-					ZonedDateTime today = ZonedDateTime.now(zoneOffset);
-					LocalDateTime startOfToday = today.toLocalDate().atStartOfDay();
-					LocalDateTime endOfToday = startOfToday.plusDays(1);
-					criteria = criteria.and("listedDate").gte(startOfToday).lt(endOfToday);
-					break;
-				}
-			}
+        // Type filter
+        if (filterRequest.getType() != null && !filterRequest.getType().isEmpty()) {
+            criteria = criteria.and("type").regex("^" + Pattern.quote(filterRequest.getType()), "i");
+        }
 
-			// Handle 'listedOn' date-based filtering
-			if (filterRequest.getListedOn() != null && !filterRequest.getListedOn().isEmpty()) {
-				DateTimeFormatter formatter = DateTimeFormatter.ofPattern("dd/MM/yyyy");
-				LocalDate listedOnDate = LocalDate.parse(filterRequest.getListedOn(), formatter);
+        // Search filter
+        if (filterRequest.getSearch() != null && !filterRequest.getSearch().isEmpty()) {
+            String searchPattern = ".*" + filterRequest.getSearch().replace(" ", ".*") + ".*";
+            criteria = criteria.orOperator(Criteria.where("title").regex(searchPattern, "i"));
+        }
 
-				LocalDateTime startOfDay = listedOnDate.atStartOfDay();
-				LocalDateTime endOfDay = listedOnDate.atTime(LocalTime.MAX);
+        // ListedBy filter
+        if (filterRequest.getListedBy() != null && !filterRequest.getListedBy().isEmpty()) {
+            if (filterRequest.getListedBy().equalsIgnoreCase("Agent")) {
+                criteria = criteria.and("userType").regex("^Agent$", "i");
+            } else {
+                criteria = criteria.and("userType").in("Owner", "Builder");
+            }
+        }
 
-				criteria = criteria.and("listedDate").gte(startOfDay).lte(endOfDay);
+        List<Criteria> orCriteriaList = new ArrayList<>();
+
+        // Area filter
+        if (filterRequest.getAreas() != null && !filterRequest.getAreas().isEmpty()) {
+            List<Criteria> areaCriteria = filterRequest.getAreas().stream()
+                    .map(area -> Criteria.where("area").regex("^" + Pattern.quote(area) + "$", "i"))
+                    .collect(Collectors.toList());
+            orCriteriaList.add(new Criteria().orOperator(areaCriteria.toArray(new Criteria[0])));
+        }
+
+        // BHK filter
+        if (filterRequest.getBhks() != null && !filterRequest.getBhks().isEmpty()) {
+            List<Criteria> bhkCriteria = filterRequest.getBhks().stream()
+                    .map(bhk -> Criteria.where("bhk").regex("^" + Pattern.quote(bhk) + "$", "i"))
+                    .collect(Collectors.toList());
+            orCriteriaList.add(new Criteria().orOperator(bhkCriteria.toArray(new Criteria[0])));
+        }
+
+        // SubType filter
+        if (filterRequest.getSubType() != null && !filterRequest.getSubType().isEmpty()) {
+            List<Criteria> subtypeCriteria = filterRequest.getSubType().stream()
+                    .map(subtype -> Criteria.where("unitType").regex("^" + Pattern.quote(subtype) + "$", "i"))
+                    .collect(Collectors.toList());
+            orCriteriaList.add(new Criteria().orOperator(subtypeCriteria.toArray(new Criteria[0])));
+        }
+
+        // FurnishedTypes filter
+        if (filterRequest.getFurnishedTypes() != null && !filterRequest.getFurnishedTypes().isEmpty()) {
+            List<Criteria> furnishedTypeCriteria = filterRequest.getFurnishedTypes().stream()
+                    .map(type -> Criteria.where("furnishedType").regex("^" + Pattern.quote(type) + "$", "i"))
+                    .collect(Collectors.toList());
+            orCriteriaList.add(new Criteria().orOperator(furnishedTypeCriteria.toArray(new Criteria[0])));
+        }
+
+        // Apply combined $or
+        if (!orCriteriaList.isEmpty()) {
+            criteria = criteria.andOperator(orCriteriaList.toArray(new Criteria[0]));
+        }
+
+        // SqFt filter
+        if (filterRequest.getMinsqFt() != null && filterRequest.getMaxsqFt() != null) {
+            if (filterRequest.getMinsqFt() != 0 && filterRequest.getMaxsqFt() != 10000) {
+                criteria = criteria.and("sqFt").gte(filterRequest.getMinsqFt()).lte(filterRequest.getMaxsqFt());
+            } else if (filterRequest.getMinsqFt() != 0) {
+                criteria = criteria.and("sqFt").gte(filterRequest.getMinsqFt());
+            } else if (filterRequest.getMaxsqFt() != 0) {
+                criteria = criteria.and("sqFt").lte(filterRequest.getMaxsqFt());
+            }
+        }
+
+        // Rent filter
+        if (filterRequest.getMinRent() != 0 && filterRequest.getMaxRent() != 0) {
+            criteria = criteria.and("rentValue").gte(filterRequest.getMinRent()).lte(filterRequest.getMaxRent());
+        } else if (filterRequest.getMinRent() != 0) {
+            criteria = criteria.and("rentValue").gte(filterRequest.getMinRent());
+        } else if (filterRequest.getMaxRent() != 0) {
+            criteria = criteria.and("rentValue").lte(filterRequest.getMaxRent());
+        }
+	Pageable pageable = PageRequest.of(page, size, Sort.by(Sort.Direction.DESC, "listedDate"));
+        Query query = Query.query(criteria).with(pageable);
+		
+        List<PropertyDetails> properties = mongoTemplate.find(query, PropertyDetails.class);
+		System.out.println("An error occurred while fetching properties: " + properties);
+
+        if (user != null) {
+            Set<String> savedPropertyIds = new HashSet<>(user.getSavedPropertyIds());
+            Set<String> contactedPropertyIds = new HashSet<>(user.getContactedPropertyIds());
+
+            List<UserPropertyStatus> userPropertyStatuses = userPropertyStatusRepository.findByUserIdAndPropIdIn(
+                    user.getId(), properties.stream().map(PropertyDetails::getId).collect(Collectors.toList()));
+
+            Map<String, String> propertyStatusMap = userPropertyStatuses.stream()
+                    .collect(Collectors.toMap(UserPropertyStatus::getPropId, UserPropertyStatus::getStatus));
+
+            List<UserPropertyRemark> remarks = userPropertyRemarkRepository.findByUserIdAndPropIdIn(user.getId(),
+                    properties.stream().map(PropertyDetails::getId).collect(Collectors.toList()));
+
+            Map<String, String> propertyRemarksMap = remarks.stream()
+                    .collect(Collectors.toMap(UserPropertyRemark::getPropId, UserPropertyRemark::getRemark));
+			List<String> excludedStatuses = Arrays.asList("Sell out", "Rent out", "Broker", "Duplicate");
+
+			Iterator<PropertyDetails> iterator = properties.iterator();
+		while (iterator.hasNext()) {
+			PropertyDetails property = iterator.next();
+			boolean isSpecificUser = "67128ea2d6da233a1af20f30".equals(filterRequest.getUserId());
+
+			property.setIsSaved(savedPropertyIds.contains(property.getId()) ? 1 : 0);
+
+			if (contactedPropertyIds.contains(property.getId())) {
+				String randomPhoneNumber = "9" + (100000000 + new Random().nextInt(900000000));
+				property.setNumber(isSpecificUser ? randomPhoneNumber : property.getNumber());
+				property.setName(property.getName()); // Optional
 			} else {
-				// Exclude future-dated properties if no 'listedOn' filter is provided
-				LocalDateTime now = LocalDateTime.now(zoneOffset);
-				criteria = criteria.and("listedDate").lte(now);
+				property.setNumber("0");
+				property.setName("0");
 			}
 
-			// Handle type-based filtering
-			if (filterRequest.getType() != null && !filterRequest.getType().isEmpty()) {
-				criteria = criteria.and("type").regex("^" + Pattern.quote(filterRequest.getType()), "i");
+			String status = propertyStatusMap.getOrDefault(property.getId(), "Active");
+			property.setStatus(status);
+			property.setRemark(propertyRemarksMap.getOrDefault(property.getId(), null));
+
+			// ❌ Remove if status is in the excluded list (case-insensitive)
+			if (excludedStatuses.stream().anyMatch(ex -> ex.equalsIgnoreCase(status))) {
+				iterator.remove();
 			}
-
-			if (filterRequest.getSearch() != null && !filterRequest.getSearch().isEmpty()) {
-				String searchPattern = ".*" + filterRequest.getSearch().replace(" ", ".*") + ".*";
-				criteria = criteria.orOperator(Criteria.where("title").regex(searchPattern, "i"));
-			}
-
-			if (filterRequest.getListedBy() != null && !filterRequest.getListedBy().isEmpty()) {
-				if (filterRequest.getListedBy().equalsIgnoreCase("Agent")) {
-					criteria = criteria.and("userType").regex("^Agent$", "i");
-				} else if (filterRequest.getListedBy().equalsIgnoreCase("Owner")) {
-					criteria = criteria.and("userType").in("Owner", "Builder");
-				} else {
-					criteria = criteria.and("userType").in("Owner", "Builder");
-				}
-
-			}
-
-			// Combine all $or conditions into a list
-			List<Criteria> orCriteriaList = new ArrayList<>();
-
-			// Area-based filtering (case-insensitive)
-			if (filterRequest.getAreas() != null && !filterRequest.getAreas().isEmpty()) {
-				List<Criteria> areaCriteria = filterRequest.getAreas().stream()
-						.map(area -> Criteria.where("area").regex("^" + Pattern.quote(area) + "$", "i"))
-						.collect(Collectors.toList());
-				orCriteriaList.add(new Criteria().orOperator(areaCriteria.toArray(new Criteria[0])));
-			}
-
-			// BHK-based filtering (case-insensitive)
-			if (filterRequest.getBhks() != null && !filterRequest.getBhks().isEmpty()) {
-				List<Criteria> bhkCriteria = filterRequest.getBhks().stream()
-						.map(bhk -> Criteria.where("bhk").regex("^" + Pattern.quote(bhk) + "$", "i"))
-						.collect(Collectors.toList());
-				orCriteriaList.add(new Criteria().orOperator(bhkCriteria.toArray(new Criteria[0])));
-			}
-
-			// Subtype-based filtering (case-insensitive)
-			if (filterRequest.getSubType() != null && !filterRequest.getSubType().isEmpty()) {
-				List<Criteria> subtypeCriteria = filterRequest.getSubType().stream()
-						.map(subtype -> Criteria.where("unitType").regex("^" + Pattern.quote(subtype) + "$", "i"))
-						.collect(Collectors.toList());
-				orCriteriaList.add(new Criteria().orOperator(subtypeCriteria.toArray(new Criteria[0])));
-			}
-
-			if (filterRequest.getFurnishedTypes() != null && !filterRequest.getFurnishedTypes().isEmpty()) {
-				List<Criteria> furnishedTypeCriteria = filterRequest.getFurnishedTypes().stream()
-						.map(furnishedType -> Criteria.where("furnishedType")
-								.regex("^" + Pattern.quote(furnishedType) + "$", "i"))
-						.collect(Collectors.toList());
-				orCriteriaList.add(new Criteria().orOperator(furnishedTypeCriteria.toArray(new Criteria[0])));
-			}
-
-			// Add the combined $or criteria to the main criteria
-			if (!orCriteriaList.isEmpty()) {
-				criteria = criteria.andOperator(orCriteriaList.toArray(new Criteria[0]));
-			}
-
-			if (filterRequest.getMinsqFt() != null && filterRequest.getMaxsqFt() != null) {
-				if (filterRequest.getMinsqFt() != 0 && filterRequest.getMaxsqFt() != 10000) {
-					criteria = criteria.and("sqFt").gte(filterRequest.getMinsqFt()).lte(filterRequest.getMaxsqFt());
-				} else if (filterRequest.getMinsqFt() != 0) {
-					criteria = criteria.and("sqFt").gte(filterRequest.getMinsqFt());
-				} else if (filterRequest.getMaxsqFt() != 0) {
-					criteria = criteria.and("sqFt").lte(filterRequest.getMaxsqFt());
-				}
-			}
-
-			// Rent-based filtering
-			if (filterRequest.getMinRent() != 0 && filterRequest.getMaxRent() != 0) {
-				criteria = criteria.and("rentValue").gte(filterRequest.getMinRent()).lte(filterRequest.getMaxRent());
-			} else if (filterRequest.getMinRent() != 0) {
-				criteria = criteria.and("rentValue").gte(filterRequest.getMinRent());
-			} else if (filterRequest.getMaxRent() != 0) {
-				criteria = criteria.and("rentValue").lte(filterRequest.getMaxRent());
-			}
-
-			// Create Pageable object
-			Pageable pageable = PageRequest.of(page, size, Sort.by(Sort.Direction.DESC, "listedDate"));
-
-			// Create Query object with criteria and pagination
-			Query query = Query.query(criteria).with(pageable);
-
-			// Execute the query to get properties
-			List<PropertyDetails> properties = mongoTemplate.find(query, PropertyDetails.class);
-
-			// Additional processing for saved and contacted properties
-			if (user != null) {
-				Set<String> savedPropertyIds = new HashSet<>(user.getSavedPropertyIds());
-				Set<String> contactedPropertyIds = new HashSet<>(user.getContactedPropertyIds());
-
-				// Fetch UserPropertyStatus using the corrected repository method
-				List<UserPropertyStatus> userPropertyStatuses = userPropertyStatusRepository.findByUserIdAndPropIdIn(
-						user.getId(), properties.stream().map(PropertyDetails::getId).collect(Collectors.toList()));
-
-				Map<String, String> propertyStatusMap = userPropertyStatuses.stream()
-						.collect(Collectors.toMap(UserPropertyStatus::getPropId, UserPropertyStatus::getStatus));
-
-				// Fetch remarks for the current user and properties
-				List<UserPropertyRemark> remarks = userPropertyRemarkRepository.findByUserIdAndPropIdIn(user.getId(),
-						properties.stream().map(PropertyDetails::getId).collect(Collectors.toList()));
-				Map<String, String> propertyRemarksMap = remarks.stream()
-						.collect(Collectors.toMap(UserPropertyRemark::getPropId, UserPropertyRemark::getRemark));
-
-				properties.forEach(property -> {
-					boolean isSpecificUser = "67128ea2d6da233a1af20f30".equals(filterRequest.getUserId()); // replace
-																											// with the
-					// specific user ID
-
-					if (savedPropertyIds.contains(property.getId())) {
-						property.setIsSaved(1);
-					} else {
-						property.setIsSaved(0);
-					}
-
-					if (contactedPropertyIds.contains(property.getId())) {
-						// Generate a random realistic phone number
-						String randomPhoneNumber = "9" + (100000000 + new Random().nextInt(900000000));
-						property.setNumber(isSpecificUser ? randomPhoneNumber : property.getNumber());
-						property.setName(property.getName()); // Optional placeholder for contacted name
-					} else {
-						property.setNumber("0");
-						property.setName("0");
-					}
-
-					property.setStatus(propertyStatusMap.getOrDefault(property.getId(), "Active"));
-
-					property.setRemark(propertyRemarksMap.getOrDefault(property.getId(), null));
-
-				});
-			}
-
-			// Count total number of items matching the criteria
-			Query countQuery = Query.query(criteria);
-			long totalItems = mongoTemplate.count(countQuery, PropertyDetails.class);
-
-			return new PageImpl<>(properties, pageable, totalItems);
-
-		} catch (Exception e) {
-			System.out.println("An error occurred while fetching properties: " + e.getMessage());
-			e.printStackTrace();
-			throw e;
 		}
-	}
 
-	public List<PropertyDetails> findPropertiesWithDuplicateNumbers() {
+           
+        }
+
+
+
+        long totalItems = mongoTemplate.count(Query.query(criteria), PropertyDetails.class);
+		System.out.println("properties: " +totalItems);
+
+		return new PageImpl<>(properties, pageable, totalItems);
+
+    } catch (Exception e) {
+        System.out.println("An error occurred while fetching properties: " + e.getMessage());
+        e.printStackTrace();
+        throw e;
+    }
+}
+public List<PropertyDetails> findPropertiesWithDuplicateNumbers() {
 		return propertyDetailsRepository.findPropertiesWithDuplicateNumbers();
 	}
 

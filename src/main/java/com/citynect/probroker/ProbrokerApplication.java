@@ -24,7 +24,6 @@ public class ProbrokerApplication {
 //			}
 //		};
 //	}
-
 	@Bean
 	public WebMvcConfigurer configure() {
 		return new WebMvcConfigurer() {
@@ -34,4 +33,5 @@ public class ProbrokerApplication {
 			}
 		};
 	}
+
 }
